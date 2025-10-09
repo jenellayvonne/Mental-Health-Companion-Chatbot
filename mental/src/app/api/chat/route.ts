@@ -91,6 +91,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ userMessage, aiMessage, conversationId });
   } catch (error) {
     console.error('Error processing chat message:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+    // Return the actual error message for debugging
+    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }
