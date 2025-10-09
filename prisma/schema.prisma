@@ -1,0 +1,48 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  email         String    @unique
+  name          String
+  role          Role      @default(USER)
+  conversations Conversation[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Conversation {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String    @db.ObjectId
+  user        User      @relation(fields: [userId], references: [id])
+  moderatorId String?   @db.ObjectId
+  status      String    @default("active") // e.g., active, waiting, closed
+  priority    String    @default("medium") // e.g., low, medium, high, crisis
+  messages    Message[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Message {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  conversationId String        @db.ObjectId
+  conversation   Conversation  @relation(fields: [conversationId], references: [id])
+  sender         String        // "AI", "user", or moderator's name
+  text           String
+  isCrisis       Boolean       @default(false)
+  createdAt      DateTime      @default(now())
+}
+
+enum Role {
+  USER
+  MODERATOR
+}

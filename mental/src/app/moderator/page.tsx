@@ -1,121 +1,137 @@
-"use client";
 
-import { useState } from "react";
-import { MessageSquare, Users, AlertCircle, Settings } from "lucide-react";
+'use client';
 
-export default function ModeratorDashboard() {
-  const [activePage, setActivePage] = useState("dashboard");
+import { useState } from 'react';
+import { Card } from '@/components/ui/Card';
+import { Button } from '@/components/ui/Button';
+import { Users, MessageSquare, AlertTriangle, ShieldCheck } from 'lucide-react';
+
+const ModeratorDashboard = () => {
+  const [activeTab, setActiveTab] = useState('conversations');
+
+  const conversations = [
+    { id: 1, user: 'Alice', lastMessage: 'Feeling really down', status: 'waiting', priority: 'high' },
+    { id: 2, user: 'Bob', lastMessage: 'Just need to talk', status: 'active', priority: 'medium' },
+    { id: 3, user: 'Charlie', lastMessage: 'Thank you for your help', status: 'resolved', priority: 'low' },
+    { id: 4, user: 'David', lastMessage: 'I am in a crisis!', status: 'active', priority: 'crisis' },
+    { id: 5, user: 'Eve', lastMessage: 'Feeling anxious about my exams', status: 'waiting', priority: 'high' },
+    { id: 6, user: 'Frank', lastMessage: 'I think I need help', status: 'waiting', priority: 'crisis' },
+  ];
+
+  const users = [
+    { id: 1, name: 'Alice', mood: 'Low', joined: '2023-10-27' },
+    { id: 2, name: 'Bob', mood: 'Okay', joined: '2023-10-26' },
+  ];
+
+  const crisisAlerts = conversations.filter(c => c.priority === 'crisis');
 
   return (
-    <div className="flex min-h-screen bg-gray-100">
-      {/* Sidebar */}
-      <aside className="w-64 bg-blue-700 text-white p-5 flex flex-col">
-        <h2 className="text-2xl font-bold mb-6">🧠 Moderator</h2>
-        <nav className="flex flex-col space-y-3">
-          {[
-            { name: "Dashboard", icon: <MessageSquare /> },
-            { name: "Users", icon: <Users /> },
-            { name: "Reports", icon: <AlertCircle /> },
-            { name: "Settings", icon: <Settings /> },
-          ].map((item) => (
-            <button
-              key={item.name}
-              onClick={() => setActivePage(item.name.toLowerCase())}
-              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-left ${
-                activePage === item.name.toLowerCase()
-                  ? "bg-blue-500"
-                  : "hover:bg-blue-600"
-              }`}
-            >
-              {item.icon}
-              {item.name}
-            </button>
-          ))}
+    <div className="flex h-screen bg-gray-100">
+      <aside className="w-64 bg-gray-800 text-white p-4">
+        <h1 className="text-2xl font-bold mb-8">Moderator Dashboard</h1>
+        <nav>
+          <ul>
+            <li className="mb-4">
+              <Button variant={activeTab === 'conversations' ? 'secondary' : 'ghost'} onClick={() => setActiveTab('conversations')} className="w-full justify-start">
+                <MessageSquare className="mr-2" /> Conversations
+              </Button>
+            </li>
+            <li className="mb-4">
+              <Button variant={activeTab === 'users' ? 'secondary' : 'ghost'} onClick={() => setActiveTab('users')} className="w-full justify-start">
+                <Users className="mr-2" /> Users
+              </Button>
+            </li>
+            <li className="mb-4">
+              <Button variant={activeTab === 'crisis' ? 'secondary' : 'ghost'} onClick={() => setActiveTab('crisis')} className="w-full justify-start text-red-500">
+                <AlertTriangle className="mr-2" /> Crisis Alerts
+              </Button>
+            </li>
+          </ul>
         </nav>
       </aside>
+      <main className="flex-1 p-6">
+        <div className="grid grid-cols-4 gap-6 mb-6">
+            <Card>
+                <h3 className="font-bold text-lg">Active Conversations</h3>
+                <p className="text-3xl">{conversations.filter(c => c.status === 'active').length}</p>
+            </Card>
+            <Card>
+                <h3 className="font-bold text-lg">Waiting Users</h3>
+                <p className="text-3xl">{conversations.filter(c => c.status === 'waiting').length}</p>
+            </Card>
+            <Card className="text-red-500">
+                <h3 className="font-bold text-lg">Crisis Alerts</h3>
+                <p className="text-3xl">{crisisAlerts.length}</p>
+            </Card>
+            <Card>
+                <h3 className="font-bold text-lg">Total Users</h3>
+                <p className="text-3xl">{users.length}</p>
+            </Card>
+        </div>
 
-      {/* Main Content */}
-      <main className="flex-1 p-8">
-        <header className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-semibold text-gray-800">
-            {activePage.charAt(0).toUpperCase() + activePage.slice(1)}
-          </h1>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-blue-300" />
-            <span className="font-medium text-gray-700">Moderator</span>
-          </div>
-        </header>
-
-        {/* Dashboard Page */}
-        {activePage === "dashboard" && (
-          <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-              {[
-                { label: "Active Chats", value: "24" },
-                { label: "Flagged Reports", value: "5" },
-                { label: "Total Users", value: "123" },
-              ].map((card) => (
-                <div
-                  key={card.label}
-                  className="bg-white rounded-xl shadow p-5 text-center"
-                >
-                  <h3 className="text-lg text-gray-500">{card.label}</h3>
-                  <p className="text-3xl font-bold text-blue-600">{card.value}</p>
+        {activeTab === 'conversations' && (
+          <Card>
+            <h2 className="text-xl font-bold mb-4">All Conversations</h2>
+            <div className="space-y-4">
+              {conversations.map(convo => (
+                <div key={convo.id} className={`p-4 rounded-lg ${convo.priority === 'crisis' ? 'bg-red-200' : 'bg-gray-50'}`}>
+                  <div className="flex justify-between">
+                    <p className="font-bold">{convo.user}</p>
+                    <span className={`px-2 py-1 text-xs rounded-full ${convo.priority === 'high' ? 'bg-yellow-200' : convo.priority === 'medium' ? 'bg-blue-200' : 'bg-gray-200'}`}>
+                      {convo.priority}
+                    </span>
+                  </div>
+                  <p className="text-sm text-gray-600">{convo.lastMessage}</p>
+                  <div className="text-xs text-gray-500 mt-2">Status: {convo.status}</div>
                 </div>
               ))}
             </div>
+          </Card>
+        )}
 
-            {/* Recent Chat Logs */}
-            <section className="bg-white p-6 rounded-xl shadow">
-              <h2 className="text-xl font-semibold mb-4">Recent Chat Logs</h2>
-              <div className="space-y-3">
-                {[
-                  { user: "User A", msg: "I'm feeling anxious lately." },
-                  { user: "User B", msg: "Can I talk to someone privately?" },
-                  { user: "User C", msg: "Thanks for the help!" },
-                ].map((chat, i) => (
-                  <div
-                    key={i}
-                    className="flex justify-between items-center border-b pb-2"
-                  >
-                    <div>
-                      <p className="font-medium text-gray-800">{chat.user}</p>
-                      <p className="text-sm text-gray-600">{chat.msg}</p>
-                    </div>
-                    <button className="text-blue-600 hover:underline text-sm">
-                      View
-                    </button>
-                  </div>
+        {activeTab === 'users' && (
+          <Card>
+            <h2 className="text-xl font-bold mb-4">User Management</h2>
+            <table className="w-full">
+              <thead>
+                <tr className="text-left">
+                  <th>Name</th>
+                  <th>Mood</th>
+                  <th>Joined</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(user => (
+                  <tr key={user.id}>
+                    <td>{user.name}</td>
+                    <td>{user.mood}</td>
+                    <td>{user.joined}</td>
+                  </tr>
                 ))}
-              </div>
-            </section>
-          </>
+              </tbody>
+            </table>
+          </Card>
         )}
 
-        {/* Users Page */}
-        {activePage === "users" && (
-          <section className="bg-white p-6 rounded-xl shadow">
-            <h2 className="text-xl font-semibold mb-4">User Management</h2>
-            <p className="text-gray-600">List of all registered users will appear here.</p>
-          </section>
-        )}
-
-        {/* Reports Page */}
-        {activePage === "reports" && (
-          <section className="bg-white p-6 rounded-xl shadow">
-            <h2 className="text-xl font-semibold mb-4">Flagged Reports</h2>
-            <p className="text-gray-600">All flagged or inappropriate messages will show here.</p>
-          </section>
-        )}
-
-        {/* Settings Page */}
-        {activePage === "settings" && (
-          <section className="bg-white p-6 rounded-xl shadow">
-            <h2 className="text-xl font-semibold mb-4">Settings</h2>
-            <p className="text-gray-600">Manage preferences and moderator controls here.</p>
-          </section>
+        {activeTab === 'crisis' && (
+            <Card className="border-red-500">
+                <h2 className="text-xl font-bold mb-4 text-red-500">Crisis Alerts</h2>
+                <div className="space-y-4">
+                    {crisisAlerts.map(convo => (
+                        <div key={convo.id} className="p-4 rounded-lg bg-red-100 flex justify-between items-center">
+                            <div>
+                                <p className="font-bold text-red-800">{convo.user}</p>
+                                <p className="text-sm text-red-600">{convo.lastMessage}</p>
+                            </div>
+                            <Button variant="destructive">Respond Immediately</Button>
+                        </div>
+                    ))}
+                </div>
+            </Card>
         )}
       </main>
     </div>
   );
 }
+
+export default ModeratorDashboard;
