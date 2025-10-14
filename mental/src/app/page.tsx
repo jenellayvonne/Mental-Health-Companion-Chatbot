@@ -6,20 +6,20 @@ import { useAuth } from '../context/AuthContext';
 import { LoginForm } from '@/components/auth/LoginForm';
 
 export default function Home() {
-  const { isAuthenticated, role } = useAuth();
+  const { user } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (isAuthenticated) {
-      if (role === 'user') {
+    if (user) {
+      if (user.role === 'user') {
         router.push('/user/dashboard');
-      } else if (role === 'moderator') {
+      } else if (user.role === 'moderator') {
         router.push('/moderator/dashboard');
       }
     }
-  }, [isAuthenticated, role, router]);
+  }, [user, router]);
 
-  if (isAuthenticated) {
+  if (user) {
     return null;
   }
 

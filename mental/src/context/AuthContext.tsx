@@ -1,13 +1,17 @@
 
 "use client";
 
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 
-type UserRole = 'user' | 'moderator';
+export type UserRole = 'user' | 'moderator';
+
+interface User {
+  id: string;
+  role: UserRole;
+}
 
 interface AuthState {
-  isAuthenticated: boolean;
-  role: UserRole | null;
+  user: User | null;
   login: (role: UserRole) => void;
   logout: () => void;
 }
@@ -15,22 +19,29 @@ interface AuthState {
 export const AuthContext = createContext<AuthState | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [role, setRole] = useState<UserRole | null>(null);
+  const [user, setUser] = useState<User | null>(null);
 
-  const login = (userRole: UserRole) => {
-    setIsAuthenticated(true);
-    setRole(userRole);
+  useEffect(() => {
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
+      setUser(JSON.parse(storedUser));
+    }
+  }, []);
+
+  const login = (role: UserRole) => {
+    const userToStore = { id: Math.random().toString(36).substring(2, 15), role };
+    localStorage.setItem('user', JSON.stringify(userToStore));
+    setUser(userToStore);
   };
 
   const logout = () => {
-    setIsAuthenticated(false);
-    setRole(null);
+    localStorage.removeItem('user');
+    setUser(null);
     window.location.href = '/';
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, role, login, logout }}>
+    <AuthContext.Provider value={{ user, login, logout }}>
       {children}
     </AuthContext.Provider>
   );

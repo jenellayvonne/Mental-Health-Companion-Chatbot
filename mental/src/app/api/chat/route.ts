@@ -1,97 +1,64 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { prisma } from '@/lib/prisma';
 
-import { NextResponse } from 'next/server';
-import { PrismaClient } from '@prisma/client';
-import { GoogleGenerativeAI, HarmCategory, HarmBlockThreshold } from '@google/generative-ai';
-
-const prisma = new PrismaClient();
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-
-async function getFirstUser() {
-  const user = await prisma.user.findFirst();
-  if (!user) {
-    throw new Error("No users found in the database.");
-  }
-  return user;
-}
-
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
-    let { message, conversationId } = await req.json();
+    const { prompt, userId, conversationId } = await req.json();
 
-    if (!conversationId) {
-      const user = await getFirstUser();
-      const conversation = await prisma.conversation.create({
-        data: {
-          userId: user.id,
-        },
-      });
-      conversationId = conversation.id;
+    if (!prompt) {
+      return new NextResponse('Missing prompt', { status: 400 });
     }
 
-    // 1. Save the user's message
-    const userMessage = await prisma.message.create({
+    if (!userId) {
+      return new NextResponse('Missing userId', { status: 400 });
+    }
+
+    let conversation;
+
+    if (conversationId) {
+      conversation = await prisma.conversation.findUnique({
+        where: { id: conversationId },
+      });
+    } else {
+      conversation = await prisma.conversation.create({
+        data: { userId },
+      });
+    }
+
+    if (!conversation) {
+      return new NextResponse('Conversation not found', { status: 404 });
+    }
+
+    // Save user message
+    await prisma.message.create({
       data: {
-        text: message,
+        conversationId: conversation.id,
         sender: 'user',
-        conversation: {
-          connect: { id: conversationId },
-        },
+        text: prompt,
       },
     });
 
-    // 2. Retrieve the conversation history
-    const history = await prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { createdAt: 'asc' },
-    });
+    // Initialize Google Generative AI
+    const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY as string);
+    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
 
-    // 3. Format the history for the Generative AI model
-    const chatHistory = history.map(msg => ({
-      role: msg.sender === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.text }],
-    }));
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
 
-    // 4. Generate the AI response
-    const model = genAI.getGenerativeModel({
-        model: 'gemini-1.5-flash',
-        safetySettings: [
-            {
-                category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-            },
-            {
-                category: HarmCategory.HARM_CATEGORY_HARASSMENT,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-            },
-            {
-                category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-            },
-            {
-                category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                threshold: HarmBlockThreshold.BLOCK_NONE,
-            },
-        ],
-    });
-
-    const result = await model.generateContent({ contents: chatHistory });
-    const aiResponse = result.response.text();
-
-    // 5. Save the AI's response
+    // Save AI response
     const aiMessage = await prisma.message.create({
       data: {
-        text: aiResponse,
+        conversationId: conversation.id,
         sender: 'AI',
-        conversation: {
-          connect: { id: conversationId },
-        },
+        text,
       },
     });
 
-    return NextResponse.json({ userMessage, aiMessage, conversationId });
+    return NextResponse.json({ response: aiMessage.text, conversationId: conversation.id });
   } catch (error) {
-    console.error('Error processing chat message:', error);
-    // Return the actual error message for debugging
-    return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+    console.error('[CHAT_POST]', error);
+    return new NextResponse('Internal Error', { status: 500 });
   }
 }
