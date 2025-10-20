@@ -6,7 +6,7 @@ export async function POST(req: Request) {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + apiKey,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -17,10 +17,17 @@ export async function POST(req: Request) {
     );
 
     const data = await response.json();
-    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text || "I'm here to listen 💬";
+    console.log("🧠 Gemini raw response:", data);
+
+    const reply =
+      data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "I'm here to listen 💬";
 
     return NextResponse.json({ reply });
   } catch (err) {
-    return NextResponse.json({ reply: "Sorry, there was an error connecting to Gemini." });
+    console.error("❌ Gemini API error:", err);
+    return NextResponse.json({
+      reply: "Sorry, there was an error connecting to Gemini.",
+    });
   }
 }
