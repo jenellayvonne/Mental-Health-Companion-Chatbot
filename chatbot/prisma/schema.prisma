@@ -8,10 +8,36 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  username  String
+  id        String     @id @default(auto()) @map("_id") @db.ObjectId
+  username  String     @unique
   password  String
-  role      String   @default("user")
+  role      String     @default("user")
+  userChats UserChat[]
+}
+
+model Chat {
+  id        String     @id @default(auto()) @map("_id") @db.ObjectId
+  roomName  String     @unique
+  messages  Message[]
+  userChats UserChat[]
+  createdAt DateTime   @default(now())
+}
+
+model Message {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  chatId    String   @db.ObjectId
+  chat      Chat     @relation(fields: [chatId], references: [id])
+  sender    String
+  text      String
+  username  String
   createdAt DateTime @default(now())
+}
+
+model UserChat {
+  id     String @id @default(auto()) @map("_id") @db.ObjectId
+  userId String @db.ObjectId
+  chatId String @db.ObjectId
+
+  user User @relation(fields: [userId], references: [id])
+  chat Chat @relation(fields: [chatId], references: [id])
 }

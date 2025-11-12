@@ -1,145 +1,276 @@
 "use client";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import { MessageSquare, Users, AlertCircle, Settings, LogOut } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import io from "socket.io-client";
+
+type SocketType = ReturnType<typeof io>;
+type Message = { sender: string; text: string; room: string; username?: string };
+type ChatPreview = { id: string; user: string; msg: string };
 
 export default function ModeratorDashboard() {
-  const [activePage, setActivePage] = useState("dashboard");
-  const router = useRouter();
+  const [socket, setSocket] = useState<SocketType | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [recentChats, setRecentChats] = useState<ChatPreview[]>([]);
+  const [currentRoom, setCurrentRoom] = useState<string | null>(null);
+  const [selectedUser, setSelectedUser] = useState<string | null>(null);
+  const [input, setInput] = useState("");
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  const handleLogout = () => {
-    localStorage.clear();
-    router.push("/");
+  // ✅ Prevent multiple socket setups
+  const socketRef = useRef<SocketType | null>(null);
+
+  // ✅ Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // ✅ Restore previous chat on reload
+  useEffect(() => {
+    const savedRoom = localStorage.getItem("lastRoom");
+    const savedUser = localStorage.getItem("lastUser");
+    if (savedRoom && savedUser) {
+      setCurrentRoom(savedRoom);
+      setSelectedUser(savedUser);
+    }
+  }, []);
+
+  // ✅ Fetch existing chats when the page loads
+  useEffect(() => {
+    const fetchChats = async () => {
+      try {
+        const res = await fetch("/api/chats");
+        if (res.ok) {
+          const data = await res.json();
+          setRecentChats(
+            data.map((chat: any) => ({
+              id: chat.id,
+              user: chat.users?.[0] || "Unknown",
+              msg: chat.lastMessage || "",
+            }))
+          );
+        }
+      } catch (error) {
+        console.error("❌ Failed to fetch chats:", error);
+      }
+    };
+
+    fetchChats();
+  }, []);
+
+  // ✅ Socket setup (looping fix applied)
+  useEffect(() => {
+    if (socketRef.current) return; // 🧠 Prevent multiple socket setups
+
+    const setupSocket = async () => {
+      await fetch("/api/socket");
+      const newSocket = io({ path: "/api/socket", transports: ["websocket"] });
+      socketRef.current = newSocket;
+      setSocket(newSocket);
+
+      newSocket.on("connect", () => {
+        console.log("✅ Moderator connected:", newSocket.id);
+
+        // 🔁 Rejoin last room automatically after reload
+        if (currentRoom) {
+          newSocket.emit("join_room", { roomId: currentRoom, username: "Dr. Moody" });
+        }
+      });
+
+      // 🔁 Load previous messages from server
+      newSocket.on("load_messages", (msgs: Message[]) => {
+        console.log("📜 Loaded previous messages:", msgs);
+        setMessages(msgs);
+      });
+
+      // Receive messages
+      newSocket.on("receive_message", (data: Message) => {
+        console.log("📨 Received:", data);
+
+        if (data.sender === "ai") return;
+
+        setMessages((prev) => {
+          const isDuplicate = prev.some(
+            (m) =>
+              m.text === data.text &&
+              m.sender === data.sender &&
+              m.room === data.room
+          );
+          if (isDuplicate) return prev;
+          if (data.room === currentRoom) return [...prev, data];
+          return prev;
+        });
+
+        setRecentChats((prev) => {
+          const exists = prev.some((chat) => chat.id === data.room);
+          if (exists) {
+            return prev.map((chat) =>
+              chat.id === data.room ? { ...chat, msg: data.text } : chat
+            );
+          }
+          return [
+            ...prev,
+            { id: data.room, user: data.username || "Unknown", msg: data.text },
+          ];
+        });
+      });
+
+      // New chat notification
+      newSocket.on("new_chat_message", (data: any) => {
+        console.log("🆕 New chat notification:", data);
+
+        // 💡 Only update chat list, not message list
+        setRecentChats((prev) => {
+          const exists = prev.some((chat) => chat.id === data.room);
+          if (exists) {
+            return prev.map((chat) =>
+              chat.id === data.room ? { ...chat, msg: data.msg } : chat
+            );
+          }
+          return [
+            ...prev,
+            { id: data.room, user: data.username || "Unknown", msg: data.msg },
+          ];
+        });
+      });
+    };
+
+    setupSocket();
+
+    // ✅ Cleanup
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.off("receive_message");
+        socketRef.current.off("new_chat_message");
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, [currentRoom]);
+
+  // ✅ Join chat room
+  const joinRoom = async (room: string, username: string) => {
+    if (!socket) return;
+    setCurrentRoom(room);
+    setSelectedUser(username);
+    setMessages([]);
+
+    localStorage.setItem("lastRoom", room);
+    localStorage.setItem("lastUser", username);
+
+    socket.emit("join_room", { roomId: room, username: "Dr. Moody" });
+    console.log(`🩺 Joined room: ${room}`);
+
+    try {
+      const res = await fetch(`/api/chats/${room}?role=moderator`);
+      if (res.ok) {
+        const oldMessages = await res.json();
+        setMessages(oldMessages);
+      }
+    } catch (err) {
+      console.error("❌ Failed to load chat history:", err);
+    }
+  };
+
+  // ✅ Send message
+  const handleSend = () => {
+    if (!input.trim() || !currentRoom || !socket) return;
+    const newMsg: Message = {
+      sender: "moderator",
+      text: input,
+      room: currentRoom,
+      username: "Dr. Moody",
+    };
+    setMessages((prev) => [...prev, newMsg]);
+    socket.emit("send_message", newMsg);
+    setInput("");
   };
 
   return (
-    <div className="flex min-h-screen bg-gray-100">
-      {/* Sidebar */}
-      <aside className="w-64 bg-blue-700 text-white p-5 flex flex-col justify-between">
-        <div>
-          <h2 className="text-2xl font-bold mb-6">🧠 Moderator</h2>
-          <nav className="flex flex-col space-y-3">
-            {[
-              { name: "Dashboard", icon: <MessageSquare /> },
-              { name: "Users", icon: <Users /> },
-              { name: "Reports", icon: <AlertCircle /> },
-              { name: "Settings", icon: <Settings /> },
-            ].map((item) => (
-              <button
-                key={item.name}
-                onClick={() => setActivePage(item.name.toLowerCase())}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-left ${
-                  activePage === item.name.toLowerCase()
-                    ? "bg-blue-500"
-                    : "hover:bg-blue-600"
+    <div className="flex h-screen bg-gray-100">
+      {/* 🧩 Sidebar */}
+      <div className="w-1/3 bg-white border-r overflow-y-auto">
+        <h2 className="text-xl font-bold text-center py-4 bg-pink-600 text-white">
+          🩺 Dr. Moody Clients
+        </h2>
+
+        {recentChats.length === 0 ? (
+          <p className="text-center text-gray-500 mt-6">No active chats yet.</p>
+        ) : (
+          <ul>
+            {recentChats.map((chat) => (
+              <li
+                key={`${chat.id}-${chat.user}`} // ✅ FIXED: unique key
+                onClick={() => joinRoom(chat.id, chat.user)}
+                className={`p-3 border-b cursor-pointer hover:bg-pink-100 ${
+                  currentRoom === chat.id ? "bg-pink-200" : ""
                 }`}
               >
-                {item.icon}
-                {item.name}
-              </button>
+                <p className="font-semibold">{chat.user}</p>
+                <p className="text-sm text-gray-600 truncate">{chat.msg}</p>
+              </li>
             ))}
-          </nav>
-        </div>
+          </ul>
+        )}
+      </div>
 
-        {/* Logout Button */}
-        <button
-          onClick={handleLogout}
-          className="flex items-center gap-2 bg-red-600 hover:bg-red-700 text-white py-2 px-3 rounded-lg mt-6 transition"
-        >
-          <LogOut size={18} />
-          Logout
-        </button>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 p-8">
-        <header className="flex justify-between items-center mb-6">
-          <h1 className="text-2xl font-semibold text-gray-800">
-            {activePage.charAt(0).toUpperCase() + activePage.slice(1)}
-          </h1>
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-full bg-blue-300" />
-            <span className="font-medium text-gray-700">Moderator</span>
-          </div>
-        </header>
-
-        {/* Dashboard Page */}
-        {activePage === "dashboard" && (
+      {/* 💬 Chat Area */}
+      <div className="flex-1 flex flex-col">
+        {currentRoom ? (
           <>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-              {[
-                { label: "Active Chats", value: "0" },
-                { label: "Flagged Reports", value: "0" },
-                { label: "Total Users", value: "0" },
-              ].map((card) => (
-                <div
-                  key={card.label}
-                  className="bg-white rounded-xl shadow p-5 text-center"
-                >
-                  <h3 className="text-lg text-gray-500">{card.label}</h3>
-                  <p className="text-3xl font-bold text-blue-600">{card.value}</p>
-                </div>
-              ))}
+            <div className="bg-white shadow p-4 flex justify-between items-center">
+              <h2 className="font-bold text-lg text-pink-700">
+                Chat with {selectedUser}
+              </h2>
+              <p className="text-gray-500 text-sm">
+                Room ID: <span className="font-mono">{currentRoom}</span>
+              </p>
             </div>
 
-            {/* Recent Chat Logs */}
-            <section className="bg-white p-6 rounded-xl shadow">
-              <h2 className="text-xl font-semibold mb-4">Recent Chat Logs</h2>
-              <div className="space-y-3">
-                {[
-                  { user: "User A", msg: "I'm feeling anxious lately." },
-                  { user: "User B", msg: "Can I talk to someone privately?" },
-                  { user: "User C", msg: "Thanks for the help!" },
-                ].map((chat, i) => (
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {messages.map((m, i) => (
+                <div
+                  key={i}
+                  className={`flex ${
+                    m.sender === "moderator" ? "justify-end" : "justify-start"
+                  }`}
+                >
                   <div
-                    key={i}
-                    className="flex justify-between items-center border-b pb-2"
+                    className={`px-3 py-2 rounded-lg max-w-[75%] ${
+                      m.sender === "moderator"
+                        ? "bg-green-300 text-gray-800"
+                        : "bg-blue-200 text-gray-800"
+                    }`}
                   >
-                    <div>
-                      <p className="font-medium text-gray-800">{chat.user}</p>
-                      <p className="text-sm text-gray-600">{chat.msg}</p>
-                    </div>
-                    <button className="text-blue-600 hover:underline text-sm">
-                      View
-                    </button>
+                    <p className="text-sm">{m.text}</p>
                   </div>
-                ))}
-              </div>
-            </section>
+                </div>
+              ))}
+              <div ref={chatEndRef}></div>
+            </div>
+
+            <div className="bg-white p-4 flex gap-2 border-t">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                placeholder="Type your message..."
+                className="flex-grow border p-2 rounded-lg"
+              />
+              <button
+                onClick={handleSend}
+                className="bg-pink-600 text-white px-4 py-2 rounded-lg"
+              >
+                Send
+              </button>
+            </div>
           </>
+        ) : (
+          <div className="flex flex-col items-center justify-center h-full text-gray-500">
+            <p className="text-lg font-medium">Select a user chat to begin 🧠</p>
+          </div>
         )}
-
-        {/* Users Page */}
-        {activePage === "users" && (
-          <section className="bg-white p-6 rounded-xl shadow">
-            <h2 className="text-xl font-semibold mb-4">User Management</h2>
-            <p className="text-gray-600">
-              List of all registered users will appear here.
-            </p>
-          </section>
-        )}
-
-        {/* Reports Page */}
-        {activePage === "reports" && (
-          <section className="bg-white p-6 rounded-xl shadow">
-            <h2 className="text-xl font-semibold mb-4">Flagged Reports</h2>
-            <p className="text-gray-600">
-              All flagged or inappropriate messages will show here.
-            </p>
-          </section>
-        )}
-
-        {/* Settings Page */}
-        {activePage === "settings" && (
-          <section className="bg-white p-6 rounded-xl shadow">
-            <h2 className="text-xl font-semibold mb-4">Settings</h2>
-            <p className="text-gray-600">
-              Manage preferences and moderator controls here.
-            </p>
-          </section>
-        )}
-      </main>
+      </div>
     </div>
   );
 }
