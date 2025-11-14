@@ -1,12 +1,9 @@
 import type { NextApiRequest, NextApiResponse } from "next";
-import { Server } from "socket.io";
-import { PrismaClient } from "@prisma/client";
+import { Server, Socket } from "socket.io";
+import { PrismaClient, Message } from "@prisma/client";
 
 const prisma = new PrismaClient();
 export const config = { api: { bodyParser: false } };
-
-// Track when moderator joined each room
-const moderatorJoinTimes: Record<string, Date> = {};
 
 type NextResWithSocket = NextApiResponse & {
   socket: {
@@ -31,155 +28,121 @@ export default async function handler(req: NextApiRequest, res: NextResWithSocke
 
   res.socket.server.io = io;
 
-  io.on("connection", (socket) => {
+  io.on("connection", (socket: Socket) => {
     console.log("✅ New client connected:", socket.id);
 
-    /**
-     * 🏠 JOIN ROOM EVENT
-     */
+    socket.on("register_moderator", () => {
+      socket.join("moderators");
+      socket.data.isModerator = true;
+      console.log(`🛡️ Moderator registered: ${socket.id}`);
+    });
+
     socket.on(
       "join_room",
-      async ({ roomId, username, role }: { roomId: string; username?: string; role?: string }) => {
-        socket.join(roomId);
-        socket.data.role = role || (username === "Dr. Moody" ? "moderator" : "user");
-
-        console.log(`👤 ${username || "Unknown"} joined ${roomId} as ${socket.data.role}`);
-
-        // 🕒 Record moderator join time (once per room)
-        if (socket.data.role === "moderator") {
-          moderatorJoinTimes[roomId] = new Date();
-          console.log(`🕒 Moderator joined ${roomId} at ${moderatorJoinTimes[roomId].toISOString()}`);
+      async ({ roomId, username }: { roomId: string; username?: string }) => {
+        if (!roomId) {
+          console.error(`❌ Error: roomId is missing for socket ${socket.id} in join_room event.`);
+          return;
         }
+        socket.join(roomId);
+        socket.data.username = username;
+        if (socket.data.isModerator) {
+          socket.data.currentRoom = roomId;
+        }
+        console.log(`[${roomId}] ${username} (${socket.id}) joined.`);
 
         try {
           const chat = await prisma.chat.findUnique({
             where: { roomName: roomId },
-            include: { messages: { orderBy: { createdAt: "asc" } } },
+            include: {
+              messages: { orderBy: { createdAt: "asc" } },
+            },
           });
 
-          if (chat?.messages?.length) {
-            let filteredMessages = chat.messages;
-
-            // ✅ Filter messages for moderator: only show after they joined, exclude AI
-            if (socket.data.role === "moderator") {
-              const joinTime = moderatorJoinTimes[roomId];
-              filteredMessages = chat.messages.filter(
-                (m) => m.sender !== "ai" && (!joinTime || m.createdAt >= joinTime)
-              );
-            }
-
-            socket.emit("load_messages", filteredMessages);
+          if (!chat || !chat.messages) {
+            socket.emit("load_messages", []);
+            return;
           }
+
+          let messagesToSend: Message[] = chat.messages;
+          if (socket.data.isModerator) {
+            const allMessages = chat.messages;
+            
+            // Find the start of the latest moderator session
+            const lastHandoverMsgIndex = allMessages.findLastIndex(
+              (msg) => msg.text === "Moderator has joined the conversation."
+            );
+
+            if (lastHandoverMsgIndex === -1) {
+              messagesToSend = []; // No handover found, so no messages to send
+            } else {
+              // Find the end of that same session
+              const sessionEndMsgIndex = allMessages.findIndex(
+                (msg) => 
+                  msg.text === "Moderator session ended." &&
+                  new Date(msg.createdAt) > new Date(allMessages[lastHandoverMsgIndex].createdAt)
+              );
+              
+              const startIndex = lastHandoverMsgIndex + 1;
+              const endIndex = sessionEndMsgIndex !== -1 ? sessionEndMsgIndex : allMessages.length;
+              
+              messagesToSend = allMessages.slice(startIndex, endIndex);
+            }
+          }
+          socket.emit("load_messages", messagesToSend);
         } catch (err) {
-          console.error("❌ Error loading messages for room:", roomId, err);
+          console.error(`❌ Error loading messages for room ${roomId}:`, err);
         }
       }
     );
 
-    /**
-     * 💬 SEND MESSAGE EVENT
-     */
+    socket.on("leave_room", (roomId: string) => {
+      socket.leave(roomId);
+      if (socket.data.isModerator) {
+        delete socket.data.currentRoom;
+      }
+      console.log(`[${roomId}] user ${socket.id} left.`);
+    });
+
     socket.on(
       "send_message",
       async (data: { room: string; sender: string; text: string; username?: string }) => {
+        const { room, sender, text, username } = data;
+        if (!room || !text) return;
+
         try {
-          const { room, sender, text, username } = data;
-          if (!room || !text) return;
-
-          // Ensure chat exists
-          let chat = await prisma.chat.findUnique({ where: { roomName: room } });
-          if (!chat) chat = await prisma.chat.create({ data: { roomName: room } });
-
-          // Ensure user exists
-          const user = await prisma.user.upsert({
-            where: { username: username || "Unknown" },
-            update: {},
-            create: { username: username || "Unknown", password: "placeholder" },
-          });
-
-          // Ensure user-chat link exists
-          const link = await prisma.userChat.findFirst({
-            where: { userId: user.id, chatId: chat.id },
-          });
-          if (!link) await prisma.userChat.create({ data: { userId: user.id, chatId: chat.id } });
-
-          // Save message
           const message = await prisma.message.create({
-            data: { chatId: chat.id, sender, text, username: username || user.username },
+            data: {
+              chat: { connect: { roomName: room } },
+              sender,
+              text,
+              username: username || "Unknown",
+            },
           });
 
-          /**
-           * 🚫 AI → Only User
-           */
-          if (sender === "ai") {
-            io.to(room)
-              .fetchSockets()
-              .then((sockets) => {
-                sockets.forEach((s) => {
-                  if (s.data?.role === "user") {
-                    s.emit("receive_message", message);
-                  }
-                });
-              });
-            return;
-          }
+          const messageToSend = { ...message, room };
 
-          /**
-           * 👤 USER → Moderator
-           * Only send once after moderator joined
-           */
+          // Broadcast to everyone in the room (user and any joined mod)
+          io.to(room).emit("receive_message", messageToSend);
+
+          // If the user sends a message, also notify all moderators for the dashboard
           if (sender === "user") {
-            const joinTime = moderatorJoinTimes[room];
-
-            // ✅ Send message only to moderator sockets in that room
-            io.to(room)
-              .fetchSockets()
-              .then((sockets) => {
-                sockets.forEach((s) => {
-                  if (
-                    s.data?.role === "moderator" &&
-                    (!joinTime || message.createdAt >= joinTime)
-                  ) {
-                    s.emit("receive_message", message);
-                  }
-                });
-              });
-
-            // ✅ Only update the sidebar chat list (not resend to active chat)
-            io.emit("new_chat_message", {
+            io.to("moderators").emit("new_chat_message", {
               room,
               username: message.username,
               msg: message.text,
             });
           }
 
-          /**
-           * 🩺 MODERATOR → User
-           */
-          if (sender === "moderator") {
-            io.to(room)
-              .fetchSockets()
-              .then((sockets) => {
-                sockets.forEach((s) => {
-                  if (s.data?.role === "user") {
-                    s.emit("receive_message", message);
-                  }
-                });
-              });
-          }
-
-          console.log(`💬 ${sender} sent message in ${room}: "${text}"`);
+          console.log(`[${room}] ${sender} (${username}): \"${text}\"`);
         } catch (err) {
           console.error("❌ Error in send_message handler:", err);
         }
       }
     );
 
-    /**
-     * ❌ DISCONNECT EVENT
-     */
     socket.on("disconnect", () => {
-      console.log("❌ Client disconnected:", socket.id);
+      console.log("🔌 Client disconnected:", socket.id);
     });
   });
 

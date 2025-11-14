@@ -1,78 +1,51 @@
-import { NextApiRequest, NextApiResponse } from "next";
+// src/pages/api/chats/index.ts
+import type { NextApiRequest, NextApiResponse } from "next";
 import { prisma } from "@/lib/prisma";
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  // ✅ Handle GET - Get all chats and latest message
-  if (req.method === "GET") {
-    try {
-      const chats = await prisma.chat.findMany({
-        include: {
-          // ✅ Include users via the UserChat pivot table
-          userChats: {
-            include: {
-              user: { select: { id: true, username: true } },
-            },
+export default async function handler(
+  req: NextApiRequest,
+  res: NextApiResponse
+) {
+  if (req.method !== "GET") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  try {
+    // 1. Fetch all chats with their messages
+    const allChats = await prisma.chat.findMany({
+      include: {
+        messages: {
+          orderBy: {
+            createdAt: "desc", // Get the most recent message first
           },
-          // ✅ Include latest message
-          messages: {
-            orderBy: { createdAt: "desc" },
-            take: 1,
-            select: { text: true, createdAt: true },
-          },
+          take: 20, // Limit messages to avoid pulling huge histories
         },
-        orderBy: { createdAt: "desc" }, // ✅ use createdAt (not updatedAt)
-      });
+      },
+    });
 
-      // ✅ Format the data to return
-      const formatted = chats.map((chat) => ({
-        id: chat.id,
-        roomName: chat.roomName,
-        users: chat.userChats.map((uc) => uc.user.username),
-        lastMessage: chat.messages[0]?.text || "",
-        createdAt: chat.createdAt,
-      }));
+    // 2. Filter for chats that have been handed over to a moderator
+    const moderatorChats = allChats.filter((chat) =>
+      chat.messages.some(
+        (msg) => msg.text === "Moderator has joined the conversation."
+      )
+    );
 
-      return res.status(200).json(formatted);
-    } catch (error) {
-      console.error("Error fetching chats:", error);
-      return res.status(500).json({ error: "Failed to load chats" });
-    }
+    // 3. Format the data for the moderator dashboard
+    const chatPreviews = moderatorChats.map((chat) => {
+        const lastUserMessage = chat.messages.find(
+          (msg) => msg.sender === "user" || msg.sender === "moderator"
+        );
+        return {
+          id: chat.roomName,
+          // Reliably get username from the roomName, not from a message.
+          user: chat.roomName.replace("room_", "") || "Unknown",
+          msg: lastUserMessage?.text || "No recent messages",
+        };
+      }).reverse(); // Show the most recent chats first
+
+    res.status(200).json(chatPreviews);
+  } catch (error) {
+    console.error("❌ Error fetching chats for moderator:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
-
-  // ✅ Handle POST - Create new chat if needed
-  if (req.method === "POST") {
-    try {
-      const { userId, roomName } = req.body;
-      if (!userId) return res.status(400).json({ error: "userId is required" });
-
-      // ✅ Ensure chat exists (by room name)
-      let chat = await prisma.chat.findFirst({
-        where: { roomName: roomName || `room-${userId}` },
-      });
-
-      if (!chat) {
-        chat = await prisma.chat.create({
-          data: { roomName: roomName || `room-${userId}` },
-        });
-      }
-
-      // ✅ Link user to chat through UserChat table if not linked
-      const existingLink = await prisma.userChat.findFirst({
-        where: { userId, chatId: chat.id },
-      });
-
-      if (!existingLink) {
-        await prisma.userChat.create({
-          data: { userId, chatId: chat.id },
-        });
-      }
-
-      return res.status(200).json(chat);
-    } catch (error) {
-      console.error("Error creating chat:", error);
-      return res.status(500).json({ error: "Failed to create chat" });
-    }
-  }
-
-  return res.status(405).json({ error: "Method not allowed" });
 }

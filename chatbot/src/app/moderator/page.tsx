@@ -1,273 +1,231 @@
-"use client";
+'use client';
 
-import { useEffect, useRef, useState } from "react";
-import io from "socket.io-client";
+import { useEffect, useRef, useState } from 'react';
+import io from 'socket.io-client';
 
 type SocketType = ReturnType<typeof io>;
-type Message = { sender: string; text: string; room: string; username?: string };
+type Message = { id: string; sender: string; text: string; room: string; username?: string };
 type ChatPreview = { id: string; user: string; msg: string };
 
 export default function ModeratorDashboard() {
-  const [socket, setSocket] = useState<SocketType | null>(null);
+  const socketRef = useRef<SocketType | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [recentChats, setRecentChats] = useState<ChatPreview[]>([]);
   const [currentRoom, setCurrentRoom] = useState<string | null>(null);
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // ✅ Prevent multiple socket setups
-  const socketRef = useRef<SocketType | null>(null);
-
-  // ✅ Auto-scroll chat
+  const currentRoomRef = useRef<string | null>(null);
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    currentRoomRef.current = currentRoom;
+  }, [currentRoom]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // ✅ Restore previous chat on reload
   useEffect(() => {
-    const savedRoom = localStorage.getItem("lastRoom");
-    const savedUser = localStorage.getItem("lastUser");
-    if (savedRoom && savedUser) {
-      setCurrentRoom(savedRoom);
-      setSelectedUser(savedUser);
-    }
-  }, []);
-
-  // ✅ Fetch existing chats when the page loads
-  useEffect(() => {
-    const fetchChats = async () => {
-      try {
-        const res = await fetch("/api/chats");
-        if (res.ok) {
-          const data = await res.json();
-          setRecentChats(
-            data.map((chat: any) => ({
-              id: chat.id,
-              user: chat.users?.[0] || "Unknown",
-              msg: chat.lastMessage || "",
-            }))
-          );
-        }
-      } catch (error) {
-        console.error("❌ Failed to fetch chats:", error);
-      }
-    };
-
-    fetchChats();
-  }, []);
-
-  // ✅ Socket setup (looping fix applied)
-  useEffect(() => {
-    if (socketRef.current) return; // 🧠 Prevent multiple socket setups
-
     const setupSocket = async () => {
-      await fetch("/api/socket");
-      const newSocket = io({ path: "/api/socket", transports: ["websocket"] });
+      await fetch('/api/socket');
+      const newSocket = io({ path: '/api/socket', transports: ['websocket'] });
       socketRef.current = newSocket;
-      setSocket(newSocket);
 
-      newSocket.on("connect", () => {
-        console.log("✅ Moderator connected:", newSocket.id);
-
-        // 🔁 Rejoin last room automatically after reload
-        if (currentRoom) {
-          newSocket.emit("join_room", { roomId: currentRoom, username: "Dr. Moody" });
-        }
+      newSocket.on('connect', () => {
+        console.log('✅ Moderator connected:', newSocket.id);
+        newSocket.emit('register_moderator');
+        fetchInitialData();
       });
 
-      // 🔁 Load previous messages from server
-      newSocket.on("load_messages", (msgs: Message[]) => {
-        console.log("📜 Loaded previous messages:", msgs);
+      newSocket.on('load_messages', (msgs: Message[]) => {
+        console.log('📜 Loaded previous messages:', msgs);
         setMessages(msgs);
       });
 
-      // Receive messages
-      newSocket.on("receive_message", (data: Message) => {
-        console.log("📨 Received:", data);
+      // This listener ONLY handles messages for the *active* chat window
+      newSocket.on('receive_message', (data: Message) => {
+        console.log('📨 Received message for active chat:', data);
+        if (data.room === currentRoomRef.current) {
+          setMessages((prev) => [...prev, data]);
+        }
+      });
 
-        if (data.sender === "ai") return;
-
-        setMessages((prev) => {
-          const isDuplicate = prev.some(
-            (m) =>
-              m.text === data.text &&
-              m.sender === data.sender &&
-              m.room === data.room
-          );
-          if (isDuplicate) return prev;
-          if (data.room === currentRoom) return [...prev, data];
-          return prev;
-        });
-
+      // This listener ONLY handles the list of recent chats on the left
+      newSocket.on('new_chat_message', (data: { room: string; username: string; msg: string }) => {
+        console.log('🆕 New chat notification for dashboard:', data);
         setRecentChats((prev) => {
-          const exists = prev.some((chat) => chat.id === data.room);
-          if (exists) {
-            return prev.map((chat) =>
-              chat.id === data.room ? { ...chat, msg: data.text } : chat
-            );
+          const chatExists = prev.some((chat) => chat.id === data.room);
+          if (chatExists) {
+            // If chat exists, update its message and move to top
+            const updatedChat = { id: data.room, user: data.username, msg: data.msg };
+            const otherChats = prev.filter((chat) => chat.id !== data.room);
+            return [updatedChat, ...otherChats];
+          } else {
+            // If new chat, add it to the top of the list
+            return [{ id: data.room, user: data.username, msg: data.msg }, ...prev];
           }
-          return [
-            ...prev,
-            { id: data.room, user: data.username || "Unknown", msg: data.text },
-          ];
         });
       });
 
-      // New chat notification
-      newSocket.on("new_chat_message", (data: any) => {
-        console.log("🆕 New chat notification:", data);
-
-        // 💡 Only update chat list, not message list
-        setRecentChats((prev) => {
-          const exists = prev.some((chat) => chat.id === data.room);
-          if (exists) {
-            return prev.map((chat) =>
-              chat.id === data.room ? { ...chat, msg: data.msg } : chat
-            );
-          }
-          return [
-            ...prev,
-            { id: data.room, user: data.username || "Unknown", msg: data.msg },
-          ];
-        });
+      newSocket.on('disconnect', () => {
+        console.log('🔌 Moderator disconnected');
       });
+    };
+
+    const fetchInitialData = async () => {
+      try {
+        const res = await fetch('/api/chats');
+        if (res.ok) {
+          const data = await res.json();
+          setRecentChats(data);
+        } else {
+          console.error('Failed to fetch chats with status:', res.status);
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch chats:', error);
+      }
+
+      const savedRoom = localStorage.getItem('lastRoom');
+      const savedUser = localStorage.getItem('lastUser');
+      if (savedRoom && savedUser) {
+        joinRoom(savedRoom, savedUser);
+      }
     };
 
     setupSocket();
 
-    // ✅ Cleanup
     return () => {
       if (socketRef.current) {
-        socketRef.current.off("receive_message");
-        socketRef.current.off("new_chat_message");
+        console.log('🔌 Disconnecting moderator socket...');
         socketRef.current.disconnect();
-        socketRef.current = null;
       }
     };
-  }, [currentRoom]);
+  }, []);
 
-  // ✅ Join chat room
-  const joinRoom = async (room: string, username: string) => {
-    if (!socket) return;
+  const joinRoom = (room: string, username: string) => {
+    if (!socketRef.current || !socketRef.current.connected) {
+      console.warn("Socket not ready for joining room");
+      return;
+    }
+    if (currentRoom === room) return;
+
+    if (currentRoom) {
+      socketRef.current.emit('leave_room', currentRoom);
+      console.log(`🏃 Leaving room: ${currentRoom}`);
+    }
+
     setCurrentRoom(room);
     setSelectedUser(username);
     setMessages([]);
+    localStorage.setItem('lastRoom', room);
+    localStorage.setItem('lastUser', username);
 
-    localStorage.setItem("lastRoom", room);
-    localStorage.setItem("lastUser", username);
-
-    socket.emit("join_room", { roomId: room, username: "Dr. Moody" });
-    console.log(`🩺 Joined room: ${room}`);
-
-    try {
-      const res = await fetch(`/api/chats/${room}?role=moderator`);
-      if (res.ok) {
-        const oldMessages = await res.json();
-        setMessages(oldMessages);
-      }
-    } catch (err) {
-      console.error("❌ Failed to load chat history:", err);
-    }
+    socketRef.current.emit('join_room', { roomId: room, username: 'Dr. Moody' });
+    console.log(`🩺 Joining room: ${room}`);
   };
 
-  // ✅ Send message
   const handleSend = () => {
-    if (!input.trim() || !currentRoom || !socket) return;
-    const newMsg: Message = {
-      sender: "moderator",
+    if (!input.trim() || !currentRoom || !socketRef.current) return;
+    const newMsg = {
+      sender: 'moderator',
       text: input,
       room: currentRoom,
-      username: "Dr. Moody",
+      username: 'Dr. Moody',
     };
-    setMessages((prev) => [...prev, newMsg]);
-    socket.emit("send_message", newMsg);
-    setInput("");
+
+    socketRef.current.emit('send_message', newMsg);
+    setInput('');
+  };
+
+  const handleLogout = () => {
+    window.location.href = '/';
   };
 
   return (
-    <div className="flex h-screen bg-gray-100">
-      {/* 🧩 Sidebar */}
-      <div className="w-1/3 bg-white border-r overflow-y-auto">
-        <h2 className="text-xl font-bold text-center py-4 bg-pink-600 text-white">
-          🩺 Dr. Moody Clients
+    <div className='flex h-screen bg-gray-100'>
+      <div className='w-1/3 bg-white border-r flex flex-col'>
+        <h2 className='text-xl font-bold text-center py-4 bg-blue-800 text-white flex items-center justify-center'>
+          Dr. Moody Clients
         </h2>
-
-        {recentChats.length === 0 ? (
-          <p className="text-center text-gray-500 mt-6">No active chats yet.</p>
-        ) : (
-          <ul>
-            {recentChats.map((chat) => (
-              <li
-                key={`${chat.id}-${chat.user}`} // ✅ FIXED: unique key
-                onClick={() => joinRoom(chat.id, chat.user)}
-                className={`p-3 border-b cursor-pointer hover:bg-pink-100 ${
-                  currentRoom === chat.id ? "bg-pink-200" : ""
-                }`}
-              >
-                <p className="font-semibold">{chat.user}</p>
-                <p className="text-sm text-gray-600 truncate">{chat.msg}</p>
-              </li>
-            ))}
-          </ul>
-        )}
+        <div className='flex-1 overflow-y-auto'>
+          {recentChats.length === 0 ? (
+            <p className='text-center text-gray-500 mt-6'>No active chats yet.</p>
+          ) : (
+            <ul>
+              {recentChats.map((chat) => (
+                <li
+                  key={chat.id}
+                  onClick={() => joinRoom(chat.id, chat.user)}
+                  className={`p-3 border-b cursor-pointer hover:bg-blue-200 ${
+                    currentRoom === chat.id ? 'bg-blue-300' : ''
+                  }`}>
+                  <p className='font-semibold'>{chat.user}</p>
+                  <p className='text-sm text-gray-600 truncate'>{chat.msg}</p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div className='p-4'>
+          <button
+            onClick={handleLogout}
+            className='w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded'>
+            Logout
+          </button>
+        </div>
       </div>
 
-      {/* 💬 Chat Area */}
-      <div className="flex-1 flex flex-col">
+      <div className='flex-1 flex flex-col'>
         {currentRoom ? (
           <>
-            <div className="bg-white shadow p-4 flex justify-between items-center">
-              <h2 className="font-bold text-lg text-pink-700">
+            <div className='bg-white shadow p-4 flex justify-between items-center'>
+              <h2 className='font-bold text-lg text-blue-900'>
                 Chat with {selectedUser}
               </h2>
-              <p className="text-gray-500 text-sm">
-                Room ID: <span className="font-mono">{currentRoom}</span>
+              <p className='text-gray-500 text-sm'>
+                Room ID: <span className='font-mono'>{currentRoom}</span>
               </p>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-2">
-              {messages.map((m, i) => (
+            <div className='flex-1 overflow-y-auto p-4 space-y-2'>
+              {messages.map((m) => (
                 <div
-                  key={i}
+                  key={m.id}
                   className={`flex ${
-                    m.sender === "moderator" ? "justify-end" : "justify-start"
-                  }`}
-                >
+                    m.sender === 'moderator' ? 'justify-end' : 'justify-start'
+                  }`}>
                   <div
                     className={`px-3 py-2 rounded-lg max-w-[75%] ${
-                      m.sender === "moderator"
-                        ? "bg-green-300 text-gray-800"
-                        : "bg-blue-200 text-gray-800"
-                    }`}
-                  >
-                    <p className="text-sm">{m.text}</p>
+                      m.sender === 'moderator'
+                        ? 'bg-green-300 text-gray-800'
+                        : 'bg-blue-500 text-white'
+                    }`}>
+                    <p className='text-sm'>{m.text}</p>
                   </div>
                 </div>
               ))}
               <div ref={chatEndRef}></div>
             </div>
 
-            <div className="bg-white p-4 flex gap-2 border-t">
+            <div className='bg-white p-4 flex gap-2 border-t'>
               <input
-                type="text"
+                type='text'
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                placeholder="Type your message..."
-                className="flex-grow border p-2 rounded-lg"
+                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                placeholder='Type your message...'
+                className='flex-grow border p-2 rounded-lg'
               />
               <button
                 onClick={handleSend}
-                className="bg-pink-600 text-white px-4 py-2 rounded-lg"
-              >
+                className='bg-blue-800 text-white px-4 py-2 rounded-lg'>
                 Send
               </button>
             </div>
           </>
         ) : (
-          <div className="flex flex-col items-center justify-center h-full text-gray-500">
-            <p className="text-lg font-medium">Select a user chat to begin 🧠</p>
+          <div className='flex flex-col items-center justify-center h-full text-gray-500'>
+            <p className='text-lg font-medium'>Select a user chat to begin 🧠</p>
           </div>
         )}
       </div>

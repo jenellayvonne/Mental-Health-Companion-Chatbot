@@ -18,6 +18,29 @@ export default function UserChat() {
   const [isTyping, setIsTyping] = useState(false);
   const socketRef = useRef<SocketType | null>(null);
 
+  // ✅ Save message to DB (modified to accept room and user)
+  const saveMessageToDB = async (
+    msg: Message,
+    room: string | null,
+    user: string | null
+  ) => {
+    if (!room || !user) return; // Don't save if room or user is missing
+    try {
+      await fetch("/api/chats/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roomName: room,
+          sender: msg.sender,
+          text: msg.text,
+          username: user,
+        }),
+      });
+    } catch (err) {
+      console.error("❌ Failed to save message:", err);
+    }
+  };
+
   // ✅ Load username and room
   useEffect(() => {
     const storedUser = localStorage.getItem("username");
@@ -39,24 +62,26 @@ export default function UserChat() {
             }));
             setMessages(formatted);
           } else {
-            // If no history, show AI greeting
-            setMessages([
-              {
-                sender: "ai",
-                text: "Hi! I'm your chat assistant. How are you feeling today?",
-              },
-            ]);
+            // If no history, show AI greeting and save it
+            const aiGreeting: Message = {
+              sender: "ai",
+              text: "Hi! I\'m your chat assistant. How are you feeling today?",
+            };
+            setMessages([aiGreeting]);
+            // Pass room and user directly to avoid race condition
+            saveMessageToDB(aiGreeting, room, storedUser); 
           }
           setIsLoaded(true);
         })
         .catch((err) => {
           console.error("Error loading chat history:", err);
-          setMessages([
-            {
-              sender: "ai",
-              text: "Hi! I'm your chat assistant. How are you feeling today?",
-            },
-          ]);
+          const aiGreeting: Message = {
+            sender: "ai",
+            text: "Hi! I\'m your chat assistant. How are you feeling today?",
+          };
+          setMessages([aiGreeting]);
+          // Pass room and user directly to avoid race condition
+          saveMessageToDB(aiGreeting, room, storedUser);
           setIsLoaded(true);
         });
     } else {
@@ -80,7 +105,7 @@ export default function UserChat() {
     socketRef.current = socket;
 
     socket.emit("join_room", { roomId, username, role: "user" });
-    console.log("🩺 Joined moderator room:", roomId);
+    console.log("Joined moderator room:", roomId);
 
     socket.on("receive_message", (data: Message) => {
       console.log("📩 Received:", data);
@@ -93,24 +118,6 @@ export default function UserChat() {
     };
   }, [isModeratorMode, roomId, username]);
 
-  // ✅ Save message to DB
-  const saveMessageToDB = async (msg: Message) => {
-    try {
-      await fetch("/api/chats/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          roomName: roomId, // ✅ renamed to match backend expectation
-          sender: msg.sender,
-          text: msg.text,
-          username: username,
-        }),
-      });
-    } catch (err) {
-      console.error("❌ Failed to save message:", err);
-    }
-  };
-
   // ✅ Send message handler
   const handleSend = async () => {
     if (!input.trim()) return;
@@ -120,9 +127,6 @@ export default function UserChat() {
       return;
     }
 
-    const userMsg: Message = { sender: "user", text: input };
-    setMessages((prev) => [...prev, userMsg]);
-    saveMessageToDB(userMsg); // 💾 save user message
     const lower = input.toLowerCase();
 
     // 🩺 Moderator Mode
@@ -136,6 +140,10 @@ export default function UserChat() {
       setInput("");
       return;
     }
+    
+    const userMsg: Message = { sender: "user", text: input };
+    setMessages((prev) => [...prev, userMsg]);
+    saveMessageToDB(userMsg, roomId, username); // 💾 save user message
 
     // 💬 AI Mode logic
     let aiResponse = "";
@@ -154,25 +162,28 @@ export default function UserChat() {
       const data = await geminiReply.json();
       aiResponse =
         data.reply +
-        " 😔 I think it might help to talk with Dr. Moody. Would you like to switch to Moderator Mode?";
+        " I think it might help to talk with Dr. Moody. Would you like to switch to Moderator Mode?";
     } else if (["yes", "yeah", "okay", "sure"].some((w) => lower.includes(w))) {
-      aiResponse = "Alright, I’ll transfer you to Dr. Moody now 🩺...";
-      const aiMsg = { sender: "ai", text: aiResponse };
+      const aiResponse = "Alright, I\'ll transfer you to Dr. Moody now ...";
+      const aiMsg: Message = { sender: "ai", text: aiResponse };
       setMessages((prev) => [...prev, aiMsg]);
-      saveMessageToDB(aiMsg);
-
+      saveMessageToDB(aiMsg, roomId, username);
+      
       // 🩺 Switch to Moderator Mode
-      setTimeout(() => {
+      setTimeout(async () => {
         setIsModeratorMode(true);
         const systemMsgs: Message[] = [
           { sender: "system", text: "Moderator has joined the conversation." },
           {
             sender: "moderator",
-            text: "Hi, I'm Dr. Moody. How are you feeling today?",
+            text: "Hi, I\'m Dr. Moody. How are you feeling today?",
           },
         ];
         setMessages((prev) => [...prev, ...systemMsgs]);
-        systemMsgs.forEach(saveMessageToDB);
+        
+        // Save messages sequentially to avoid race conditions
+        await saveMessageToDB(systemMsgs[0], roomId, username);
+        await saveMessageToDB(systemMsgs[1], roomId, username);
       }, 800);
       setInput("");
       return;
@@ -191,7 +202,7 @@ export default function UserChat() {
       setIsTyping(false);
       const aiMsg = { sender: "ai", text: aiResponse };
       setMessages((prev) => [...prev, aiMsg]);
-      saveMessageToDB(aiMsg); // 💾 save AI reply
+      saveMessageToDB(aiMsg, roomId, username); // 💾 save AI reply
     }, 800);
     setInput("");
   };
@@ -199,12 +210,19 @@ export default function UserChat() {
   // ✅ Switch back to AI mode
   const handleSwitchToAI = () => {
     setIsModeratorMode(false);
+  
+    // 💾 Save a session end marker for the moderator view (not shown to user)
+    saveMessageToDB({
+      sender: "system",
+      text: "Moderator session ended.",
+    }, roomId, username);
+  
     const msgs: Message[] = [
-      { sender: "system", text: `Welcome back, ${username}! 👋` },
+      { sender: "system", text: `Welcome back, ${username}!` },
       { sender: "ai", text: "Hi again! How are you feeling now?" },
     ];
     setMessages((prev) => [...prev, ...msgs]);
-    msgs.forEach(saveMessageToDB);
+    msgs.forEach(msg => saveMessageToDB(msg, roomId, username));
   };
 
   // ✅ Logout
@@ -227,8 +245,8 @@ export default function UserChat() {
       <div className="bg-white shadow-md rounded-xl p-4 w-[700px]">
         {/* Header */}
         <div className="flex justify-between items-center mb-3">
-          <h1 className="text-2xl font-bold text-center text-pink-600">
-            🧠 {isModeratorMode ? "Dr. Moody (Moderator Mode)" : "Dr. Chatty (AI Mode)"}
+          <h1 className="text-2xl font-bold text-center text-blue-800">
+            {isModeratorMode ? "Dr. Moody (Moderator Mode)" : "Dr. Chatty (AI Mode)"}
           </h1>
           <div className="flex gap-2">
             {isModeratorMode && (
